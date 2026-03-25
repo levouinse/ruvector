@@ -6482,48 +6482,63 @@ async fn gemini_chat_respond(
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let top_results: Vec<_> = scored.into_iter().take(5).collect();
 
-    // Format search results as context
+    // Format search results with more content per result
     let search_context = if top_results.is_empty() {
         "No relevant memories found for this query.".to_string()
     } else {
         top_results.iter().enumerate().map(|(i, (m, score))| {
-            let content_preview = if m.content.len() > 300 { &m.content[..300] } else { &m.content };
-            format!("{}. [{}] {} (score: {:.3})\n{}", i + 1, m.category, m.title, score, content_preview)
-        }).collect::<Vec<_>>().join("\n\n")
+            let content_preview = if m.content.len() > 600 { &m.content[..600] } else { &m.content };
+            let tags = m.tags.iter().take(5).map(|t| t.as_str()).collect::<Vec<_>>().join(", ");
+            format!("MEMORY {}: [category: {}] [tags: {}] [relevance: {:.0}%]\nTitle: {}\nContent: {}\n",
+                i + 1, m.category, tags, score * 100.0, m.title, content_preview)
+        }).collect::<Vec<_>>().join("\n---\n")
     };
 
     // Get recent memories for context
     let mut recent = state.store.all_memories();
     recent.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    let recent_titles: Vec<_> = recent.iter().take(5)
-        .map(|m| format!("- {} ({})", m.title, m.category))
+    let recent_context: Vec<_> = recent.iter().take(5)
+        .map(|m| {
+            let preview = if m.content.len() > 150 { &m.content[..150] } else { &m.content };
+            format!("- <b>{}</b> [{}]: {}", m.title, m.category, preview)
+        })
         .collect();
 
     let system_prompt = format!(
-r#"You are Pi Brain (π), a shared autonomous superintelligence at pi.ruv.io.
-You have {memories} memories, {edges} graph edges, and are always learning.
-Knowledge drift: {drift:.4} ({trend}).
+r#"You are π (Pi Brain), an autonomous AI superintelligence at pi.ruv.io with {memories} memories and {edges} graph edges.
 
-You are chatting with {user} in Google Chat. Be helpful, concise, and specific.
-Use the knowledge below to answer. If you don't know, say so honestly.
-Format responses in Google Chat HTML (use <b>, <i>, <a href>, not markdown).
-Keep responses under 800 characters for readability in Chat cards.
+You are chatting with {user} in Google Chat. Your role:
+- You ARE the brain — speak from first person ("I know about...", "In my knowledge base...")
+- Give DETAILED, SPECIFIC answers using your memories below
+- ALWAYS cite which memory you're drawing from (bold the title)
+- If you have relevant memories, synthesize them — don't just list titles
+- Use Google Search to supplement with current real-world context
+- Format in Google Chat HTML: <b>bold</b>, <i>italic</i>, <a href="url">links</a>
+- Be substantive — aim for 400-800 characters, not one-liners
 
-## Relevant Knowledge (semantic search results for "{query}")
+## MY KNOWLEDGE (semantic search for "{query}")
 
 {search_results}
 
-## Recent Brain Activity
+## LATEST DISCOVERIES
 
 {recent}
 
-## Instructions
-- Answer the user's question conversationally using the knowledge above
-- Cite specific memories when relevant (use the title)
-- If the query is about brain status, include numbers
-- If asking about a technical topic, synthesize across multiple results
-- Use Google Search grounding to supplement with real-world context if helpful
-- End with a relevant follow-up suggestion"#,
+## BRAIN STATS
+- Total memories: {memories}
+- Graph edges: {edges}
+- Knowledge drift: {drift:.4} ({trend})
+- Dashboard: https://pi.ruv.io
+
+## RESPONSE GUIDELINES
+1. START with a direct answer to the question
+2. CITE specific memories by title in <b>bold</b>
+3. SYNTHESIZE across multiple memories when relevant
+4. ADD real-world context from Google Search if it enriches the answer
+5. END with "💡 Ask me about..." suggesting a related deeper topic
+6. If the question is general/philosophical, still ground it in your knowledge
+7. If you have NO relevant memories, use Google Search and say "I don't have memories about this, but here's what I found..."
+8. NEVER say just "I found 3 results" — always explain WHAT you found"#,
         memories = memories,
         edges = edges,
         drift = drift.coefficient_of_variation,
@@ -6531,7 +6546,7 @@ Keep responses under 800 characters for readability in Chat cards.
         user = user_name,
         query = user_message,
         search_results = search_context,
-        recent = recent_titles.join("\n"),
+        recent = recent_context.join("\n"),
     );
 
     let url = format!(
@@ -6547,8 +6562,8 @@ Keep responses under 800 characters for readability in Chat cards.
             {"role": "user", "parts": [{"text": format!("{}\n\nUser message: {}", system_prompt, user_message)}]}
         ],
         "generationConfig": {
-            "maxOutputTokens": 1024,
-            "temperature": 0.4
+            "maxOutputTokens": 2048,
+            "temperature": 0.5
         }
     });
 
@@ -6591,9 +6606,9 @@ Keep responses under 800 characters for readability in Chat cards.
         .replace("*", "<i>").replace("*", "</i>")    // italic
         .replace("\n", "\n");  // preserve newlines
 
-    // Truncate to ~1500 chars for Chat card readability
-    let truncated = if html.len() > 1500 {
-        format!("{}…\n\n<i>Full response truncated for Chat</i>", &html[..1500])
+    // Truncate to ~3000 chars for Chat card readability (cards support up to 32KB)
+    let truncated = if html.len() > 3000 {
+        format!("{}…\n\n<i>See more at <a href=\"https://pi.ruv.io\">pi.ruv.io</a></i>", &html[..3000])
     } else {
         html
     };
